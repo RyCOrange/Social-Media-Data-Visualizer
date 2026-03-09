@@ -1,2 +1,2 @@
 # Social Media Data Visualizer
-A data visualizer for social media, including Instagram, Facebook, X (Twitter)
+A data visualizer for social media, including Instagram, Facebook, X (Twitter) written in R
