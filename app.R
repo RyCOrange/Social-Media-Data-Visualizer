@@ -8,39 +8,66 @@ library(stringr)
 library(purrr)
 library(DT)
 
-# UI
+# ============================================================================
+# UI DEFINITION
+# ============================================================================
 ui <- fluidPage(
-  titlePanel("Instagram Analytics Dashboard"),
+  titlePanel("Multi-network Social Media Analytics Dashboard"),
   
   sidebarLayout(
     sidebarPanel(
-      fileInput("file", "Upload Instagram CSV",
+      # File upload widget
+      fileInput("file", "Upload Social Media CSV",
                 accept = c(".csv")),
       
       hr(),
       
+      # network selection dropdown
+      uiOutput("network_selector"),
+      
+      hr(),
+      
+      # Dynamic impressions slider - adjusts based on data
       uiOutput("impressions_slider"),
       
       hr(),
       
+      # Dynamic engagements/reactions slider - adjusts based on data
       uiOutput("engagements_slider"),
       
       hr(),
       
-      checkboxGroupInput("post_type", 
-                         "Post Types:",
-                         choices = c("Reel", "Post", "Story"),
-                         selected = c("Reel", "Post")),
+      # Toggle between Engagements and Reactions
+      checkboxInput("use_reactions", 
+                    "Use Reactions instead of Engagements",
+                    value = FALSE),
       
       hr(),
       
+      # Dynamic Post Type selector - options change based on network
+      uiOutput("post_type_selector"),
+      
+      hr(),
+      
+      # Dynamic Content Type selector - options change based on network
+      uiOutput("content_type_selector"),
+      
+      hr(),
+      
+      # Enable Post Link Clicks filter (when available in data)
+      uiOutput("link_clicks_toggle"),
+      
+      hr(),
+      
+      # Color coding options for scatter plot
       selectInput("color_by", 
                   "Color Points By:",
-                  choices = c("Content.Type"),
+                  choices = c("Content.Type", "Post.Type", "Network"),
                   selected = "Content.Type"),
       
       hr(),
       
+      # Tag filtering dropdown
       selectInput("tag_types", 
                   "Choose Tags:",
                   choices = c("All Tags"),
@@ -48,6 +75,7 @@ ui <- fluidPage(
       
       hr(),
       
+      # Date range filter
       dateRangeInput("date_range", 
                      "Date Range:",
                      start = NULL,
@@ -55,10 +83,12 @@ ui <- fluidPage(
       
       hr(),
       
+      # Reset all filters to defaults
       actionButton("reset", "Reset Filters", 
                    class = "btn-warning")
     ),
     
+    # Main content area with tabbed interface
     mainPanel(
       tabsetPanel(
         tabPanel("Scatter Plot",
@@ -88,23 +118,54 @@ ui <- fluidPage(
   )
 )
 
-# Server
+# ============================================================================
+# SERVER LOGIC
+# ============================================================================
 server <- function(input, output, session) {
   
-  # Function to split tags
+  # --------------------------------------------------------------------------
+  # network CONFIGURATION
+  # Define network-specific options for post types and content types
+  # --------------------------------------------------------------------------
+  network_config <- list(
+    Instagram = list(
+      post_types = c("Post", "Reel", "Story"),
+      content_types = c("Photo", "Video", "Carousel")
+    ),
+    Facebook = list(
+      post_types = c("Post", "Story"),
+      content_types = c("Text", "Photo", "Video", "Link", "Carousel")
+    ),
+    X = list(
+      post_types = c("Post", "Quote"),
+      content_types = c("Text", "Photo", "Video", "Link")
+    ),
+    LinkedIn = list(
+      post_types = c("Post"),
+      content_types = c("Text", "Photo", "Video", "Link", "Carousel")
+    )
+  )
+  
+  # --------------------------------------------------------------------------
+  # HELPER FUNCTION: Split comma-separated tags
+  # Handles special case of "Student Centered, Innovation Driven" tag
+  # --------------------------------------------------------------------------
   split_tags <- function(tag_string) {
     if (is.na(tag_string) || tag_string == "") {
       return(character(0))
     }
     
+    # Temporarily replace problematic tag to avoid splitting on its comma
     temp_string <- gsub("Student Centered, Innovation Driven", 
                         "SCID_placeholder", 
                         tag_string, 
                         fixed = TRUE)
     
+    # Split on commas and trim whitespace
     tags <- str_split(temp_string, ",")[[1]] %>%
       str_trim()
     
+    # Restore original tag name
     tags <- gsub("SCID_placeholder", 
                  "Student Centered, Innovation Driven", 
                  tags, 
@@ -113,37 +174,58 @@ server <- function(input, output, session) {
     return(tags)
   }
   
-  # Reactive: Load and process data
+  # --------------------------------------------------------------------------
+  # REACTIVE: Load and validate raw data from CSV
+  # Performs data type conversions and basic validation
+  # --------------------------------------------------------------------------
   raw_data <- reactive({
     req(input$file)
     
     tryCatch({
       data <- read.csv(input$file$datapath, stringsAsFactors = FALSE)
       
-      # Check if required columns exist
-      required_cols <- c("Date", "Post.Type", "Content.Type", "Impressions", 
-                         "Reach", "Engagements", "Likes", "Comments", 
-                         "Shares", "Saves", "Video.Views", "Tags")
+      # Define required columns - network column is now required
+      required_cols <- c("Date", "Network", "Post.Type", "Content.Type", 
+                         "Impressions", "Reach", "Tags")
       
+      # Check for missing required columns
       missing_cols <- setdiff(required_cols, names(data))
       if (length(missing_cols) > 0) {
         showNotification(
-          paste("Missing columns:", paste(missing_cols, collapse = ", ")),
+          paste("Missing required columns:", paste(missing_cols, collapse = ", ")),
           type = "error",
           duration = NULL
         )
         return(NULL)
       }
       
+      # Parse dates and select/clean columns
       data <- data %>%
         mutate(Date = mdy_hm(Date)) %>%
-        select(Date, Post.Type, Content.Type, Impressions, Reach, Engagements,
-               Likes, Comments, Shares, Saves, Video.Views, Tags) %>%
-        mutate(across(c(Impressions, Reach, Engagements, Likes, Comments, 
-                        Shares, Saves, Video.Views), 
-                      ~as.numeric(gsub(",", "", as.character(.))))) %>%
         mutate(Date = as.Date(Date)) %>%
         arrange(Date)
+      
+      # Standardize network names
+      data <- data %>%
+        mutate(Network = case_when(
+          tolower(Network) %in% c("instagram", "ig") ~ "Instagram",
+          tolower(Network) %in% c("facebook", "fb") ~ "Facebook",
+          tolower(Network) %in% c("x", "twitter") ~ "X",
+          tolower(Network) %in% c("linkedin", "li") ~ "LinkedIn",
+          TRUE ~ Network
+        ))
+      
+      # Convert numeric columns, handling commas in numbers
+      numeric_cols <- c("Impressions", "Reach", "Engagements", "Reactions",
+                        "Likes", "Comments", "Shares", "Saves", "Video.Views",
+                        "Post.Link.Clicks")
+      
+      # Only convert columns that exist in the data
+      existing_numeric_cols <- intersect(numeric_cols, names(data))
+      
+      data <- data %>%
+        mutate(across(all_of(existing_numeric_cols), 
+                      ~as.numeric(gsub(",", "", as.character(.)))))
       
       showNotification("Data loaded successfully!", type = "message", duration = 3)
       return(data)
@@ -158,7 +240,147 @@ server <- function(input, output, session) {
     })
   })
   
-  # Update date range input when data is loaded
+  # --------------------------------------------------------------------------
+  # REACTIVE: Get available networks from data
+  # --------------------------------------------------------------------------
+  available_networks <- reactive({
+    req(raw_data())
+    unique(raw_data()$Network) %>% sort()
+  })
+  
+  # --------------------------------------------------------------------------
+  # OUTPUT: network selector dropdown
+  # Includes "All networks" option plus individual networks
+  # --------------------------------------------------------------------------
+  output$network_selector <- renderUI({
+    req(available_networks())
+    
+    choices <- c("All networks", available_networks())
+    
+    selectInput("selected_network",
+                "Select network:",
+                choices = choices,
+                selected = "All networks",
+                multiple = FALSE)
+  })
+  
+  # --------------------------------------------------------------------------
+  # OUTPUT: Dynamic Post Type selector
+  # Options change based on selected network
+  # --------------------------------------------------------------------------
+  output$post_type_selector <- renderUI({
+    req(input$selected_network)
+    
+    if (input$selected_network == "All networks") {
+      # If all networks, show all unique post types from data
+      req(raw_data())
+      all_types <- unique(raw_data()$Post.Type) %>% 
+        na.omit() %>% 
+        sort()
+      
+      checkboxGroupInput("post_type", 
+                         "Post Types:",
+                         choices = all_types,
+                         selected = all_types)
+    } else {
+      # Show network-specific post types
+      config <- network_config[[input$selected_network]]
+      if (!is.null(config)) {
+        checkboxGroupInput("post_type", 
+                           "Post Types:",
+                           choices = config$post_types,
+                           selected = config$post_types)
+      } else {
+        # Fallback if network not in config
+        req(raw_data())
+        network_types <- raw_data() %>%
+          filter(Network == input$selected_network) %>%
+          pull(Post.Type) %>%
+          unique() %>%
+          na.omit() %>%
+          sort()
+        
+        checkboxGroupInput("post_type", 
+                           "Post Types:",
+                           choices = network_types,
+                           selected = network_types)
+      }
+    }
+  })
+  
+  # --------------------------------------------------------------------------
+  # OUTPUT: Dynamic Content Type selector
+  # Options change based on selected network
+  # --------------------------------------------------------------------------
+  output$content_type_selector <- renderUI({
+    req(input$selected_network)
+    
+    if (input$selected_network == "All networks") {
+      # If all networks, show all unique content types from data
+      req(raw_data())
+      all_types <- unique(raw_data()$Content.Type) %>% 
+        na.omit() %>% 
+        sort()
+      
+      checkboxGroupInput("content_type", 
+                         "Content Types:",
+                         choices = all_types,
+                         selected = all_types)
+    } else {
+      # Show network-specific content types
+      config <- network_config[[input$selected_network]]
+      if (!is.null(config)) {
+        checkboxGroupInput("content_type", 
+                           "Content Types:",
+                           choices = config$content_types,
+                           selected = config$content_types)
+      } else {
+        # Fallback if network not in config
+        req(raw_data())
+        network_types <- raw_data() %>%
+          filter(Network == input$selected_network) %>%
+          pull(Content.Type) %>%
+          unique() %>%
+          na.omit() %>%
+          sort()
+        
+        checkboxGroupInput("content_type", 
+                           "Content Types:",
+                           choices = network_types,
+                           selected = network_types)
+      }
+    }
+  })
+  
+  # --------------------------------------------------------------------------
+  # OUTPUT: Link Clicks toggle (only show if column exists in data)
+  # --------------------------------------------------------------------------
+  output$link_clicks_toggle <- renderUI({
+    req(raw_data())
+    
+    if ("Post.Link.Clicks" %in% names(raw_data())) {
+      list(
+        checkboxInput("enable_link_clicks",
+                      "Filter by Post Link Clicks",
+                      value = FALSE),
+        
+        conditionalPanel(
+          condition = "input.enable_link_clicks == true",
+          sliderInput("link_clicks_min",
+                      "Minimum Link Clicks:",
+                      min = 0,
+                      max = max(raw_data()$Post.Link.Clicks, na.rm = TRUE),
+                      value = 0)
+        )
+      )
+    } else {
+      p("Post Link Clicks data not available", style = "color: #888; font-style: italic;")
+    }
+  })
+  
+  # --------------------------------------------------------------------------
+  # REACTIVE: Update date range when data loads
+  # --------------------------------------------------------------------------
   observe({
     req(raw_data())
     data <- raw_data()
@@ -168,7 +390,10 @@ server <- function(input, output, session) {
                          end = max(data$Date, na.rm = TRUE))
   })
   
-  # Dynamic impressions slider
+  # --------------------------------------------------------------------------
+  # OUTPUT: Dynamic impressions slider
+  # Range adjusts based on data distribution (mean + 2.5 SD)
+  # --------------------------------------------------------------------------
   output$impressions_slider <- renderUI({
     if (is.null(input$file)) {
       sliderInput("impressions_max", 
@@ -179,6 +404,7 @@ server <- function(input, output, session) {
     } else {
       req(raw_data())
       
+      # Calculate reasonable max based on distribution
       max_val <- mean(raw_data()$Impressions, na.rm = TRUE) + 
         (2.5 * sd(raw_data()$Impressions, na.rm = TRUE))
       
@@ -190,38 +416,100 @@ server <- function(input, output, session) {
     }
   })
   
-  # Dynamic engagements slider
+  # --------------------------------------------------------------------------
+  # OUTPUT: Dynamic engagements/reactions slider
+  # Label and data source change based on toggle
+  # --------------------------------------------------------------------------
   output$engagements_slider <- renderUI({
+    req(input$use_reactions)
+    
+    # Determine label based on toggle
+    label <- if (input$use_reactions) {
+      "Max Reactions Filter:"
+    } else {
+      "Max Engagements Filter:"
+    }
+    
     if (is.null(input$file)) {
       sliderInput("engagements_max",
-                  "Max Engagements Filter:",
+                  label,
                   min = 0,
                   max = 5000,
                   value = 4000)
     } else {
       req(raw_data())
       
-      max_val <- mean(raw_data()$Engagements, na.rm = TRUE) + 
-        (2.5 * sd(raw_data()$Engagements, na.rm = TRUE))
+      # Use appropriate column based on toggle
+      if (input$use_reactions && "Reactions" %in% names(raw_data())) {
+        metric_col <- raw_data()$Reactions
+      } else if ("Engagements" %in% names(raw_data())) {
+        metric_col <- raw_data()$Engagements
+      } else {
+        # Fallback to default values
+        return(sliderInput("engagements_max",
+                           label,
+                           min = 0,
+                           max = 5000,
+                           value = 4000))
+      }
+      
+      # Calculate reasonable max based on distribution
+      max_val <- mean(metric_col, na.rm = TRUE) + 
+        (2.5 * sd(metric_col, na.rm = TRUE))
       
       sliderInput("engagements_max",
-                  "Max Engagements Filter:",
+                  label,
                   min = 0,
                   max = ceiling(max_val),
                   value = ceiling(max_val * 0.8))
     }
   })
   
-  # Reactive: Filtered data (SINGLE DEFINITION - FIXED)
+  # --------------------------------------------------------------------------
+  # REACTIVE: Filtered data based on all user selections
+  # Applies network, date, post type, content type, and metric filters
+  # --------------------------------------------------------------------------
   filtered_data <- reactive({
     req(raw_data(), input$impressions_max, input$engagements_max)
+    req(input$post_type, input$content_type)
     
-    data <- raw_data() %>%
-      filter(Impressions <= input$impressions_max,
-             Engagements <= input$engagements_max,
-             Post.Type %in% input$post_type)
+    data <- raw_data()
     
-    # Apply date filter if set
+    # Filter by network
+    if (!is.null(input$selected_network) && 
+        input$selected_network != "All networks") {
+      data <- data %>%
+        filter(Network == input$selected_network)
+    }
+    
+    # Determine which engagement metric to use
+    engagement_col <- if (input$use_reactions && "Reactions" %in% names(data)) {
+      "Reactions"
+    } else if ("Engagements" %in% names(data)) {
+      "Engagements"
+    } else {
+      NULL
+    }
+    
+    # Apply numeric filters
+    if (!is.null(engagement_col)) {
+      data <- data %>%
+        filter(Impressions <= input$impressions_max,
+               !!sym(engagement_col) <= input$engagements_max)
+    } else {
+      data <- data %>%
+        filter(Impressions <= input$impressions_max)
+    }
+    
+    # Filter by post type
+    data <- data %>%
+      filter(Post.Type %in% input$post_type)
+    
+    # Filter by content type
+    data <- data %>%
+      filter(Content.Type %in% input$content_type)
+    
+    # Apply date filter
     if (!is.null(input$date_range)) {
       data <- data %>%
         filter(Date >= input$date_range[1] & Date <= input$date_range[2])
@@ -233,10 +521,21 @@ server <- function(input, output, session) {
         filter(grepl(input$tag_types, Tags, fixed = TRUE))
     }
     
+    # Apply link clicks filter if enabled
+    if (!is.null(input$enable_link_clicks) && 
+        input$enable_link_clicks && 
+        "Post.Link.Clicks" %in% names(data)) {
+      data <- data %>%
+        filter(Post.Link.Clicks >= input$link_clicks_min)
+    }
+    
     data
   })
   
-  # Reactive: Data with split tags
+  # --------------------------------------------------------------------------
+  # REACTIVE: Data with expanded tag columns
+  # Converts comma-separated tags into individual columns
+  # --------------------------------------------------------------------------
   data_with_tags <- reactive({
     req(filtered_data())
     
@@ -249,6 +548,7 @@ server <- function(input, output, session) {
         return(data)
       }
       
+      # Split tags and create individual columns
       data %>%
         mutate(
           tag_list = map(Tags, split_tags),
@@ -279,7 +579,9 @@ server <- function(input, output, session) {
     })
   })
   
-  # Extract unique tags for dropdown
+  # --------------------------------------------------------------------------
+  # REACTIVE: Extract unique tags for dropdown filter
+  # --------------------------------------------------------------------------
   available_tags <- reactive({
     req(data_with_tags())
     
@@ -290,6 +592,7 @@ server <- function(input, output, session) {
         return(character(0))
       }
       
+      # Get all unique tags from tag columns
       unique_tags <- data_with_tags() %>%
         select(all_of(tag_cols)) %>%
         pivot_longer(everything(), values_to = "tag") %>%
@@ -305,7 +608,10 @@ server <- function(input, output, session) {
     })
   })
   
-  # Update tag dropdown when data changes (but preserve user selection)
+  # --------------------------------------------------------------------------
+  # OBSERVER: Update tag dropdown when data changes
+  # Preserves user selection when possible
+  # --------------------------------------------------------------------------
   observe({
     req(available_tags())
     
@@ -324,52 +630,95 @@ server <- function(input, output, session) {
     }
   })
   
-  # Scatter plot
+  # --------------------------------------------------------------------------
+  # OUTPUT: Scatter plot with marginal density plots
+  # X-axis: Impressions, Y-axis: Engagements or Reactions
+  # --------------------------------------------------------------------------
   output$scatter_plot <- renderPlot({
     req(filtered_data())
     
-    color_var <- sym(input$color_by)
+    # Determine Y-axis metric
+    y_metric <- if (input$use_reactions && "Reactions" %in% names(filtered_data())) {
+      "Reactions"
+    } else if ("Engagements" %in% names(filtered_data())) {
+      "Engagements"
+    } else {
+      return(plot.new())
+    }
     
+    # Determine color variable (ensure it exists in data)
+    color_var <- if (input$color_by %in% names(filtered_data())) {
+      sym(input$color_by)
+    } else {
+      sym("Content.Type")
+    }
+    
+    # Create scatter plot
     p <- ggplot(filtered_data(), 
-                aes(Impressions, Engagements, color = !!color_var)) +
+                aes(Impressions, !!sym(y_metric), color = !!color_var)) +
       geom_point(size = 3, alpha = 0.7) +
       geom_smooth(method = "lm", se = TRUE) +
       theme_minimal() +
-      labs(title = "Impressions vs Engagements",
+      labs(title = paste("Impressions vs", y_metric),
            x = "Impressions",
-           y = "Engagements") +
+           y = y_metric) +
       theme(legend.position = "bottom",
             plot.title = element_text(size = 16, face = "bold"))
     
+    # Add marginal density plots
     ggMarginal(p, type = "density", groupColour = TRUE, groupFill = TRUE)
   })
   
-  # R-squared value
+  # --------------------------------------------------------------------------
+  # OUTPUT: R-squared value and observation count
+  # Regression of Engagements/Reactions on Impressions
+  # --------------------------------------------------------------------------
   output$r_squared <- renderText({
     req(filtered_data())
     
     if (nrow(filtered_data()) < 3) {
-      return("Insufficient data for regression")
+      return("Insufficient data for regression (need at least 3 observations)")
     }
     
-    model <- lm(Engagements ~ Impressions, data = filtered_data())
+    # Determine Y variable
+    y_metric <- if (input$use_reactions && "Reactions" %in% names(filtered_data())) {
+      "Reactions"
+    } else if ("Engagements" %in% names(filtered_data())) {
+      "Engagements"
+    } else {
+      return("No engagement metric available")
+    }
+    
+    # Build regression model
+    formula_str <- paste(y_metric, "~ Impressions")
+    model <- lm(as.formula(formula_str), data = filtered_data())
     r_sqrd <- signif(summary(model)$r.squared, digits = 3)
     
     paste0("R-squared: ", r_sqrd, "\n",
            "Number of observations: ", nrow(filtered_data()))
   })
   
-  # Summary statistics
+  # --------------------------------------------------------------------------
+  # OUTPUT: Summary statistics for numeric columns
+  # --------------------------------------------------------------------------
   output$summary_stats <- renderPrint({
     req(filtered_data())
     
+    # Select numeric columns that exist in the data
+    numeric_cols <- c("Impressions", "Reach", "Engagements", "Reactions",
+                      "Likes", "Comments", "Shares", "Saves", 
+                      "Video.Views", "Post.Link.Clicks")
+    
+    existing_cols <- intersect(numeric_cols, names(filtered_data()))
+    
     filtered_data() %>%
-      select(Impressions, Reach, Engagements, Likes, Comments, 
-             Shares, Saves, Video.Views) %>%
+      select(all_of(existing_cols)) %>%
       summary()
   })
   
-  # Data table
+  # --------------------------------------------------------------------------
+  # OUTPUT: Interactive data table with filtering
+  # --------------------------------------------------------------------------
   output$data_table <- renderDT({
     req(filtered_data())
     
@@ -378,7 +727,9 @@ server <- function(input, output, session) {
               filter = "top")
   })
   
-  # Tag analysis plot
+  # --------------------------------------------------------------------------
+  # OUTPUT: Bar chart of top 15 most common tags
+  # --------------------------------------------------------------------------
   output$tag_plot <- renderPlot({
     req(data_with_tags())
     
@@ -391,6 +742,7 @@ server <- function(input, output, session) {
         return()
       }
       
+      # Count tag occurrences
       tag_counts <- data_with_tags() %>%
         select(all_of(tag_cols)) %>%
         pivot_longer(everything(), values_to = "tag") %>%
@@ -404,6 +756,7 @@ server <- function(input, output, session) {
         return()
       }
       
+      # Create horizontal bar chart
       ggplot(tag_counts, aes(x = reorder(tag, n), y = n)) +
         geom_col(fill = "steelblue") +
         coord_flip() +
@@ -419,7 +772,9 @@ server <- function(input, output, session) {
     })
   })
   
-  # Tag table
+  # --------------------------------------------------------------------------
+  # OUTPUT: Table of all tag counts
+  # --------------------------------------------------------------------------
   output$tag_table <- renderDT({
     req(data_with_tags())
     
@@ -430,6 +785,7 @@ server <- function(input, output, session) {
         return(datatable(data.frame(Message = "No tags available")))
       }
       
+      # Create tag frequency table
       tag_data <- data_with_tags() %>%
         select(all_of(tag_cols)) %>%
         pivot_longer(everything(), values_to = "tag") %>%
@@ -447,7 +803,10 @@ server <- function(input, output, session) {
     })
   })
   
-  # Time series plot
+  # --------------------------------------------------------------------------
+  # OUTPUT: Time series plot of key metrics
+  # Shows Impressions, Engagements/Reactions, and Reach over time
+  # --------------------------------------------------------------------------
   output$time_series <- renderPlot({
     req(filtered_data())
     
@@ -458,10 +817,29 @@ server <- function(input, output, session) {
         return()
       }
       
-      filtered_data() %>%
-        select(Date, Impressions, Engagements, Reach) %>%
-        pivot_longer(-Date, names_to = "Metric", values_to = "Value") %>%
-        ggplot(aes(Date, Value, color = Metric)) +
+      # Determine engagement metric
+      engagement_metric <- if (input$use_reactions && 
+                               "Reactions" %in% names(filtered_data())) {
+        "Reactions"
+      } else if ("Engagements" %in% names(filtered_data())) {
+        "Engagements"
+      } else {
+        NULL
+      }
+      
+      # Select metrics to plot
+      if (!is.null(engagement_metric)) {
+        plot_data <- filtered_data() %>%
+          select(Date, Impressions, !!sym(engagement_metric), Reach) %>%
+          pivot_longer(-Date, names_to = "Metric", values_to = "Value")
+      } else {
+        plot_data <- filtered_data() %>%
+          select(Date, Impressions, Reach) %>%
+          pivot_longer(-Date, names_to = "Metric", values_to = "Value")
+      }
+      
+      # Create line plot
+      ggplot(plot_data, aes(Date, Value, color = Metric)) +
         geom_line(linewidth = 1) +
         geom_point() +
         theme_minimal() +
@@ -477,7 +855,10 @@ server <- function(input, output, session) {
     })
   })
   
-  # Engagement rate over time
+  # --------------------------------------------------------------------------
+  # OUTPUT: Engagement rate over time by post type
+  # Calculates (Engagements or Reactions / Impressions) * 100
+  # --------------------------------------------------------------------------
   output$engagement_rate <- renderPlot({
     req(filtered_data())
     
@@ -488,15 +869,28 @@ server <- function(input, output, session) {
         return()
       }
       
-      filtered_data() %>%
-        mutate(Engagement_Rate = (Engagements / Impressions) * 100) %>%
-        ggplot(aes(Date, Engagement_Rate, color = Post.Type)) +
+      # Determine engagement metric
+      engagement_metric <- if (input$use_reactions && 
+                               "Reactions" %in% names(filtered_data())) {
+        "Reactions"
+      } else if ("Engagements" %in% names(filtered_data())) {
+        "Engagements"
+      } else {
+        return(plot.new())
+      }
+      
+      # Calculate engagement rate
+      plot_data <- filtered_data() %>%
+        mutate(Engagement_Rate = (!!sym(engagement_metric) / Impressions) * 100)
+      
+      # Create line plot
+      ggplot(plot_data, aes(Date, Engagement_Rate, color = Post.Type)) +
         geom_line(linewidth = 1) +
         geom_point(size = 2) +
         theme_minimal() +
-        labs(title = "Engagement Rate Over Time",
+        labs(title = paste(engagement_metric, "Rate Over Time"),
              x = "Date",
-             y = "Engagement Rate (%)") +
+             y = paste(engagement_metric, "Rate (%)")) +
         theme(legend.position = "bottom",
               plot.title = element_text(size = 14, face = "bold"))
       
@@ -506,19 +900,38 @@ server <- function(input, output, session) {
     })
   })
   
-  # Reset filters
+  # --------------------------------------------------------------------------
+  # OBSERVER: Reset all filters to defaults
+  # --------------------------------------------------------------------------
   observeEvent(input$reset, {
     req(raw_data())
     
     data <- raw_data()
+    
+    # Reset date range
     updateDateRangeInput(session, "date_range",
                          start = min(data$Date, na.rm = TRUE),
                          end = max(data$Date, na.rm = TRUE))
-################################################################################    
+    
+    # Reset tag filter
     updateSelectInput(session, "tag_types",
                       selected = "All Tags")
+    
+    # Reset network selection
+    updateSelectInput(session, "selected_network",
+                      selected = "All networks")
+    
+    # Reset reactions toggle
+    updateCheckboxInput(session, "use_reactions", value = FALSE)
+    
+    # Reset link clicks toggle
+    if (!is.null(input$enable_link_clicks)) {
+      updateCheckboxInput(session, "enable_link_clicks", value = FALSE)
+    }
   })
 }
 
-# Run the app
+# ============================================================================
+# RUN APPLICATION
+# ============================================================================
 shinyApp(ui = ui, server = server)
