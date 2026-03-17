@@ -858,7 +858,7 @@ server <- function(input, output, session) {
   
   # --------------------------------------------------------------------------
   # OUTPUT: Dynamic YouTube Views slider
-  # Range adjusts based on data distribution (median + 1 SD)
+  # Range adjusts based on data distribution (mean + 1 SD)
   # --------------------------------------------------------------------------
   output$youtube_views_slider <- renderUI({
     if (is.null(combined_raw_data())) {
@@ -880,11 +880,8 @@ server <- function(input, output, session) {
     }
     
     # Calculate reasonable max based on distribution
-    max_val <- median(yt_data$Video.Views, na.rm = TRUE) + 
+    max_val <- mean(yt_data$Video.Views, na.rm = TRUE) + 
       (sd(yt_data$Video.Views, na.rm = TRUE))
-    
-    # Make sure max_val is valid
-    max_val <- max(c(max_val, max(yt_data$Video.Views, na.rm = TRUE)), na.rm = TRUE)
     
     if (is.infinite(max_val) || is.na(max_val) || max_val <= 0) {
       max_val <- 100000
@@ -894,7 +891,7 @@ server <- function(input, output, session) {
                 "Max YouTube Views Filter:",
                 min = 0,
                 max = ceiling(max_val),
-                value = ceiling(max_val))
+                value = ceiling(max_val - (0.75 * max_val)))
   })
   
   # --------------------------------------------------------------------------
