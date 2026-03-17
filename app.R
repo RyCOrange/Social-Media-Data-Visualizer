@@ -46,6 +46,16 @@ ui <- fluidPage(
       
       hr(),
       
+      # Dynamic YouTube Views slider - adjusts based on data
+      uiOutput("youtube_views_slider"),
+      
+      hr(),
+      
+      # Dynamic YouTube Likes slider - adjusts based on data
+      uiOutput("youtube_likes_slider"),
+      
+      hr(),
+      
       # Toggle between Engagements and Reactions
       checkboxInput("use_reactions", 
                     "Use Reactions instead of Engagements",
@@ -405,16 +415,18 @@ server <- function(input, output, session) {
           Shares = if ("Shares" %in% names(.)) Shares else NA_real_,
           Saves = NA_real_,
           Post.Link.Clicks = NA_real_,
-          Tags = Content,  # Use Content as Tags
+          Tags = "",  # Empty string - don't show internal Content codes to users
           YouTube.Title = Video.title,
           YouTube.Duration = Duration,
           YouTube.Subscribers.Gained = Subscribers.gained,
-          YouTube.Dislikes = Dislikes
+          YouTube.Dislikes = Dislikes,
+          YouTube.Content = Content  # Store Content code in YouTube-specific column
         ) %>%
         select(Date, Network, Post.Type, Content.Type, Impressions, Reach,
                Engagements, Reactions, Likes, Comments, Shares, Saves,
                Video.Views, Post.Link.Clicks, Tags, YouTube.Title, 
-               YouTube.Duration, YouTube.Subscribers.Gained, YouTube.Dislikes) %>%
+               YouTube.Duration, YouTube.Subscribers.Gained, YouTube.Dislikes,
+               YouTube.Content) %>%
         arrange(Date)
       
       cat("Transformation complete!\n")
@@ -845,6 +857,81 @@ server <- function(input, output, session) {
   })
   
   # --------------------------------------------------------------------------
+  # OUTPUT: Dynamic YouTube Views slider
+  # Range adjusts based on data distribution (mean + 1 SD)
+  # --------------------------------------------------------------------------
+  output$youtube_views_slider <- renderUI({
+    if (is.null(combined_raw_data())) {
+      return(NULL)
+    }
+    
+    req(combined_raw_data())
+    
+    # Check if we have YouTube data with Video.Views
+    if (!"Video.Views" %in% names(combined_raw_data())) {
+      return(NULL)
+    }
+    
+    yt_data <- combined_raw_data() %>%
+      filter(Network == "YouTube" & !is.na(Video.Views))
+    
+    if (nrow(yt_data) == 0) {
+      return(NULL)
+    }
+    
+    # Calculate reasonable max based on distribution
+    max_val <- mean(yt_data$Video.Views, na.rm = TRUE) + 
+      (sd(yt_data$Video.Views, na.rm = TRUE))
+    
+    if (is.infinite(max_val) || is.na(max_val) || max_val <= 0) {
+      max_val <- 100000
+    }
+    
+    sliderInput("youtube_views_max",
+                "Max YouTube Views Filter:",
+                min = 0,
+                max = ceiling(max_val),
+                value = ceiling(max_val - (0.75 * max_val)))
+  })
+  
+  # --------------------------------------------------------------------------
+  # OUTPUT: Dynamic YouTube Likes slider
+  # Range adjusts based on data distribution (mean + 1 SD)
+  # --------------------------------------------------------------------------
+  output$youtube_likes_slider <- renderUI({
+    if (is.null(combined_raw_data())) {
+      return(NULL)
+    }
+    
+    req(combined_raw_data())
+    
+    # Check if we have YouTube data with Likes
+    yt_data <- combined_raw_data() %>%
+      filter(Network == "YouTube" & !is.na(Likes))
+    
+    if (nrow(yt_data) == 0) {
+      return(NULL)
+    }
+    
+    # Calculate reasonable max based on distribution
+    max_val <- mean(yt_data$Likes, na.rm = TRUE) + 
+      (sd(yt_data$Likes, na.rm = TRUE))
+    
+    # Make sure max_val is valid
+    max_val <- max(c(max_val, max(yt_data$Likes, na.rm = TRUE)), na.rm = TRUE)
+    
+    if (is.infinite(max_val) || is.na(max_val) || max_val <= 0) {
+      max_val <- 5000
+    }
+    
+    sliderInput("youtube_likes_max",
+                "Max YouTube Likes Filter:",
+                min = 0,
+                max = ceiling(max_val),
+                value = ceiling(max_val))
+  })
+  
+  # --------------------------------------------------------------------------
   # REACTIVE: Filtered data based on all user selections
   # Applies network, date, post type, content type, and metric filters
   # --------------------------------------------------------------------------
@@ -882,6 +969,18 @@ server <- function(input, output, session) {
         data <- data %>%
           filter(!!sym(engagement_col) <= input$engagements_max)
       }
+    }
+    
+    # Apply YouTube Views filter (only if input exists)
+    if (!is.null(input$youtube_views_max) && "Video.Views" %in% names(data)) {
+      data <- data %>%
+        filter(is.na(Video.Views) | Video.Views <= input$youtube_views_max)
+    }
+    
+    # Apply YouTube Likes filter (only if input exists)
+    if (!is.null(input$youtube_likes_max)) {
+      data <- data %>%
+        filter(Network != "YouTube" | is.na(Likes) | Likes <= input$youtube_likes_max)
     }
     
     # Filter by post type (only if input exists and has values)
@@ -1391,6 +1490,8 @@ server <- function(input, output, session) {
              subtitle = paste("Based on", nrow(plot_data), "videos"),
              x = "Views",
              y = "Likes") +
+        scale_x_continuous(labels = scales::comma) +
+        scale_y_continuous(labels = scales::comma) + 
         theme(plot.title = element_text(size = 16, face = "bold"),
               plot.subtitle = element_text(size = 12),
               axis.title = element_text(size = 12))
@@ -1500,6 +1601,8 @@ server <- function(input, output, session) {
         labs(title = "Likes vs Dislikes Over Time",
              x = "Date",
              y = "Count") +
+        scale_x_continuous(labels = scales::comma) +
+        scale_y_continuous(labels = scales::comma) + 
         theme(legend.position = "bottom",
               plot.title = element_text(size = 14, face = "bold"))
     }, error = function(e) {
