@@ -798,7 +798,7 @@ server <- function(input, output, session) {
                   "Max Impressions Filter:",
                   min = 0,
                   max = ceiling(max_val),
-                  value = ceiling(max_val))
+                  value = c(0, ceiling(max_val)))
     }
   })
   
@@ -852,7 +852,7 @@ server <- function(input, output, session) {
                   label,
                   min = 0,
                   max = ceiling(max_val),
-                  value = ceiling(max_val))
+                  value = c(0, ceiling(max_val)))
     }
   })
   
@@ -891,7 +891,7 @@ server <- function(input, output, session) {
                 "Max YouTube Views Filter:",
                 min = 0,
                 max = ceiling(max_val),
-                value = ceiling(max_val - (0.75 * max_val)))
+                value = c(0, ceiling(max_val - (0.75 * max_val))))
   })
   
   # --------------------------------------------------------------------------
@@ -928,7 +928,7 @@ server <- function(input, output, session) {
                 "Max YouTube Likes Filter:",
                 min = 0,
                 max = ceiling(max_val),
-                value = ceiling(max_val))
+                value = c(0, ceiling(max_val)))
   })
   
   # --------------------------------------------------------------------------
